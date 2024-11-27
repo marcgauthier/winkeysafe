@@ -1,4 +1,4 @@
-```markdown
+
 # winkeysafe
 
 `winkeysafe` is a Go package for managing encryption keys securely on Windows systems using the Data Protection API (DPAPI) and [memguard](https://github.com/awnumar/memguard) for secure memory management. It provides functionalities for generating, encrypting, decrypting, and securely storing encryption keys.
@@ -31,7 +31,7 @@ go get -u github.com/yourusername/winkeysafe
 ### Import the Package
 
 ```go
-import "github.com/yourusername/winkeysafe"
+import "github.com/marcgauthier/winkeysafe"
 ```
 
 ### Initialize Key Management
@@ -44,7 +44,7 @@ package main
 
 import (
 	"fmt"
-	"github.com/yourusername/winkeysafe"
+	"github.com/marcgauthier/winkeysafe"
 )
 
 func main() {
