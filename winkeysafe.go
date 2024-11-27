@@ -128,6 +128,34 @@ func New(cipherFile, plainTextFile string) (string, error) {
 	return formatWords(words), nil
 }
 
+// selectRandomWords selects 24 random words from the given wordsList and returns them as a []string.
+func selectRandomWords(wordsList []string) ([]string, error) {
+	// Ensure the wordsList has enough words to pick from
+	if len(wordsList) < 24 {
+		return nil, fmt.Errorf("wordsList must contain at least 24 words, but only %d provided", len(wordsList))
+	}
+
+	// Seed the random number generator
+	rand.Seed(time.Now().UnixNano())
+
+	// Create a slice to hold the selected words
+	selectedWords := make([]string, 0, 24)
+
+	// Create a map to track used indices to ensure no duplicates
+	usedIndices := make(map[int]struct{})
+
+	// Randomly pick 24 words
+	for len(selectedWords) < 24 {
+		index := rand.Intn(len(wordsList))
+		if _, used := usedIndices[index]; !used {
+			selectedWords = append(selectedWords, wordsList[index])
+			usedIndices[index] = struct{}{}
+		}
+	}
+
+	return selectedWords, nil
+}
+
 // fileExists checks if a given file exists on the system.
 func fileExists(filename string) bool {
 	_, err := os.Stat(filename)
