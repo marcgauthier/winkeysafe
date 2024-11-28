@@ -7,7 +7,7 @@
 
 - **Secure Key Management:** Uses memguard to store sensitive keys securely in memory.
 - **Encryption and Decryption:** Leverages Windows DPAPI for machine-specific encryption.
-- **Key Generation:** Generates a 24-word key for encryption purposes.
+- **Key Generation:** Generates a 32-character key for encryption purposes.
 - **Key Persistence:** Supports saving and loading encrypted keys from files.
 - **Cross-Process Security:** Ensures keys remain secure and protected in memory.
 
