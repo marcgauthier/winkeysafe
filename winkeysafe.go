@@ -2,158 +2,95 @@
 package winkeysafe
 
 import (
-	"errors"
 	"fmt"
 	"math/rand"
 	"os"
-	"strings"
 	"unsafe"
 
 	"github.com/awnumar/memguard"
 	"golang.org/x/sys/windows"
 )
 
-// SecureKey is a locked buffer holding the encryption key in memory.
-var secureKey *memguard.LockedBuffer
-
-// GetKey retrieves the key stored in memguard. Returns an error if the key is not loaded.
-func GetKey() (string, error) {
-
-	secureKey.Melt()
-	defer secureKey.Freeze()
-
-	if secureKey == nil {
-		return "", errors.New("key not loaded into memory")
-	}
-	return secureKey.String(), nil
-}
-
-// DestroyKey securely destroys the key in memory.
-func DestroyKey() {
-	if secureKey != nil {
-		secureKey.Destroy()
-		secureKey = nil
-	}
-}
-
 // AccessKey manages key initialization, validation, and encryption/decryption logic.
 // Ensure that New() has been called before using this function.
-func New(cipherFile, plainTextFile string) (string, error) {
-	if len(wordsList) == 0 {
-		return "", errors.New("wordsList is not initialized. Call New() before AccessKey()")
-	}
+func Get(cipherFile, plainTextFile string) ([]byte, error) {
 
 	keyDatExists := fileExists(cipherFile)
 	keyTxtExists := fileExists(plainTextFile)
 
 	// Error if both key.dat and key.txt exist simultaneously.
 	if keyDatExists && keyTxtExists {
-		return "", fmt.Errorf("copy %s to a safe place and remove it from this server", plainTextFile)
+		return nil, fmt.Errorf("can't have both plaintext and cipher keys on your server, copy %s to a safe place and remove it from this server", plainTextFile)
 	}
 
+	// if a key is present make sure it accessible.
 	if keyDatExists {
 		// Decrypt and load key from key.dat.
 		encryptedKey, err := os.ReadFile(cipherFile)
 		if err != nil {
-			return "", fmt.Errorf("failed to read key.dat: %w", err)
+			return nil, fmt.Errorf("failed to read %s: %w", cipherFile, err)
 		}
 
-		decryptedKey, err := decryptData(encryptedKey)
+		decryptedKey, err := decryptDataUsingDPAPI(encryptedKey)
 		if err != nil {
-			return "", fmt.Errorf("failed to decrypt key.dat: %w", err)
+			return nil, fmt.Errorf("failed to decrypt %s: %w", cipherFile, err)
 		}
 
-		// Securely load the key into memguard.
-		secureKey = memguard.NewBufferFromBytes(decryptedKey)
-
-		// Securely destroy the decryptedKey slice.
-		memguard.WipeBytes(decryptedKey)
-
-		return "", nil
+		return decryptedKey, nil
 	}
 
+	// if only a plaintext key is present, the data was moved of the cipher file was
+	// deleted by accident. Recreate the cipherFile and generate error!
+
 	if keyTxtExists {
+
 		// Validate and encrypt the key from key.txt.
 		plainTextKey, err := os.ReadFile(plainTextFile)
 		if err != nil {
-			return "", fmt.Errorf("failed to read %s: %w", plainTextFile, err)
+			return nil, fmt.Errorf("failed to read %s: %w", plainTextFile, err)
 		}
 
-		words := strings.Fields(string(plainTextKey))
-		if len(words) != 24 || !validateWords(words) {
-			return "", fmt.Errorf("%s must contain exactly 24 valid words from the word list", plainTextKey)
+		if len(plainTextKey) != 32 {
+			return nil, fmt.Errorf("%s must contain a key that is 32 characters", plainTextKey)
 		}
 
-		encryptedKey, err := encryptData([]byte(strings.Join(words, " ")))
+		encryptedKey, err := encryptDataUsingDPAPI(plainTextKey)
 		if err != nil {
-			return "", fmt.Errorf("failed to encrypt %s: %w", plainTextKey, err)
+			return nil, fmt.Errorf("failed to encrypt %s using DPAPI: %w", plainTextKey, err)
 		}
 
 		err = os.WriteFile(cipherFile, encryptedKey, 0600)
 		if err != nil {
-			return "", fmt.Errorf("failed to save %s: %w", cipherFile, err)
+			return nil, fmt.Errorf("failed to save %s: %w", cipherFile, err)
 		}
 
-		// Securely wipe the plainTextKey from memory.
-		memguard.WipeBytes(plainTextKey)
-
-		return "", nil
+		return nil, fmt.Errorf("can't have both plaintext and cipher keys on your server, copy %s to a safe place and remove it from this server", plainTextFile)
 	}
 
-	// Generate a new key if no files exist.
-	words := generate256BitsKey()
-	err := os.WriteFile(plainTextFile, []byte(strings.Join(words, " ")), 0600)
+	// if no files exist generate both cipher and plaintext files.
+
+	// generate a new key
+	plainTextKey := generate256BitsKey(32)
+
+	// save the plaintextfile
+	err := os.WriteFile(plainTextFile, []byte(plainTextKey), 0600)
 	if err != nil {
-		return "", fmt.Errorf("failed to write %s: %w", plainTextFile, err)
+		return nil, fmt.Errorf("failed to write %s: %w", plainTextFile, err)
 	}
 
-	plainTextKey, err := os.ReadFile(plainTextFile)
+	// encrypt plaintextkey using DPAPI
+	encryptedKey, err := encryptDataUsingDPAPI([]byte(plainTextKey))
 	if err != nil {
-		return "", fmt.Errorf("failed to read %s: %w", plainTextFile, err)
+		return nil, fmt.Errorf("failed to encrypt generated key: %w", err)
 	}
 
-	encryptedKey, err := encryptData([]byte(plainTextKey))
-	if err != nil {
-		return "", fmt.Errorf("failed to encrypt generated key: %w", err)
-	}
-
+	// write the cipher file.
 	err = os.WriteFile(cipherFile, encryptedKey, 0600)
 	if err != nil {
-		return "", fmt.Errorf("failed to save %s: %w", cipherFile, err)
+		return nil, fmt.Errorf("failed to save %s: %w", cipherFile, err)
 	}
 
-	// Securely wipe the plainTextKey from memory.
-	memguard.WipeBytes(plainTextKey)
-
-	return formatWords(words), nil
-}
-
-// selectRandomWords selects 24 random words from the given wordsList and returns them as a []string.
-func selectRandomWords(wordsList []string) ([]string, error) {
-	// Ensure the wordsList has enough words to pick from
-	if len(wordsList) < 24 {
-		return nil, fmt.Errorf("wordsList must contain at least 24 words, but only %d provided", len(wordsList))
-	}
-
-	// Seed the random number generator
-	rand.Seed(time.Now().UnixNano())
-
-	// Create a slice to hold the selected words
-	selectedWords := make([]string, 0, 24)
-
-	// Create a map to track used indices to ensure no duplicates
-	usedIndices := make(map[int]struct{})
-
-	// Randomly pick 24 words
-	for len(selectedWords) < 24 {
-		index := rand.Intn(len(wordsList))
-		if _, used := usedIndices[index]; !used {
-			selectedWords = append(selectedWords, wordsList[index])
-			usedIndices[index] = struct{}{}
-		}
-	}
-
-	return selectedWords, nil
+	return []byte(plainTextKey), nil
 }
 
 // fileExists checks if a given file exists on the system.
@@ -162,36 +99,8 @@ func fileExists(filename string) bool {
 	return err == nil
 }
 
-// validateWords ensures all words exist in the predefined words list.
-func validateWords(words []string) bool {
-	wordSet := make(map[string]struct{}, len(wordsList))
-	for _, word := range wordsList {
-		wordSet[word] = struct{}{}
-	}
-	for _, word := range words {
-		if _, exists := wordSet[word]; !exists {
-			return false
-		}
-	}
-	return true
-}
-
-// formatWords neatly formats a list of words into a multi-line string.
-func formatWords(words []string) string {
-	var builder strings.Builder
-	for i, word := range words {
-		builder.WriteString(word)
-		if (i+1)%6 == 0 {
-			builder.WriteString("\n")
-		} else {
-			builder.WriteString(" ")
-		}
-	}
-	return builder.String()
-}
-
 // encryptData encrypts data using DPAPI in the machine context.
-func encryptData(data []byte) ([]byte, error) {
+func encryptDataUsingDPAPI(data []byte) ([]byte, error) {
 	desc := windows.StringToUTF16Ptr("")
 	inBlob := windows.DataBlob{
 		Size: uint32(len(data)),
@@ -208,14 +117,11 @@ func encryptData(data []byte) ([]byte, error) {
 	encrypted := make([]byte, outBlob.Size)
 	copy(encrypted, unsafe.Slice(outBlob.Data, outBlob.Size))
 
-	// Securely wipe the input data.
-	memguard.WipeBytes(data)
-
 	return encrypted, nil
 }
 
 // decryptData decrypts data using DPAPI in the machine context.
-func decryptData(data []byte) ([]byte, error) {
+func decryptDataUsingDPAPI(data []byte) ([]byte, error) {
 	inBlob := windows.DataBlob{
 		Size: uint32(len(data)),
 		Data: &data[0],
@@ -238,15 +144,20 @@ func decryptData(data []byte) ([]byte, error) {
 	return decrypted, nil
 }
 
-// generate256BitsKey generates a random 24-word key from the words list.
-func generate256BitsKey() []string {
-	if len(wordsList) == 0 {
-		return nil
+// generate256BitsKey generates a random key of the specified size (in characters).
+func generate256BitsKey(size int) string {
+	const characters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*(){[]};:.,/?`~"
+	var results []byte
+
+	for i := 0; i < size; i++ {
+		// Securely generate a random index
+		x := 0
+		y := len(characters) - 1
+		randomIndex := rand.Intn(y-x+1) + x
+
+		// Append the selected character
+		results = append(results, characters[randomIndex])
 	}
 
-	results := make([]string, 24)
-	for i := 0; i < 24; i++ {
-		results[i] = wordsList[rand.Intn(len(wordsList))]
-	}
-	return results
+	return string(results)
 }
